@@ -1,0 +1,163 @@
+%fgwnh
+%Dhruv Raina
+%Last Edit: 120215
+%Dependencies: bioformats package *must* be in the matlab path
+%Description: Nuclear Segmentation program for .lsm images, resizes images
+%to run analysis.
+close all; clear all;
+
+%% Instructions for use:
+
+% 1. Make sure the 'Current Folder' (underneath 'Desktop' 'Window' and 'Help' in the main toolbar) is pointing to 'F:\Dhruv\laurianne'
+% 2. Change the 'MainDirectory' and 'OutputDirectory' variables below if you need to
+% 3. Press the 'Save' Button at the top of *this window* (the little floppy disk icon) (or press ctrl+s) if you make any changes!
+% 4. In the 'Command Window' (the window directly below this one) type 'laurianne.m' and press enter.
+% 
+% In case you're re-running the program, or are running multiple batches of files:
+% 5. Make sure you transfer all the files in the output folder to some other folder *before* you re-run the code. Some files *may* get re-written otherwise. 
+
+%note that you have to put *only images* in the MainDirectory. You cannot
+%have folders in there or the program gets confused! 
+
+%Make sure all the images in one batch are the same dimensions AND 
+%Don't set the output directory the same as the input directory
+
+
+%% Things to Edit:
+
+MainDirectory = 'I:\L.Davignon_PhD\Batch 6 x 2 channels\Batch 6 x 2 channels 2\';   %Make sure the '\' is at the end of the directory name
+OutputDirectory = 'I:\L.Davignon_PhD\Batch 6\';
+NumberOfChannels = 2; %Change this to '2' if your images have only two channels!
+
+
+%% Main Program (Don't Edit)
+tic
+dir_lst = dir(MainDirectory);
+handle_msgbox = msgbox('  Running... Give it a couple of minutes... ', 'Laurianne"s Program');
+for ctr2 = 3:length(dir_lst)
+    %1. Reading Directory Structure and Images:
+    imdir = [MainDirectory dir_lst(ctr2).name];
+    im = bfopen(imdir);                                                    %Reading using Bioformats Reader
+    series1 = im{1,1};
+    
+    chan1 = series1{1};                                                    %Reading original 5120x5120 images
+    chan2 = series1{2};
+    if NumberOfChannels==3
+        chan3 = series1{3};
+    else
+        chan3 = zeros(1024,1024);
+    end
+    disp(['Working on image: ' dir_lst(ctr2).name])
+    
+    %2. Resizing and re-scaling Images for analysis:
+    chan1r = imresize(chan1, [512 512]);
+    chan1r = mat2gray(imtophat(chan1r,strel('disk', 30)), [0 255]);        %Correcting uneven illumination
+    chan2r = mat2gray(imresize(chan2, [512 512]), [0 255]);
+    chan3r = mat2gray(imresize(chan3, [512 512]), [0 255]);
+        
+    %3. K-Means Clustering to segment nuclei:
+    tt_flat = reshape(chan1r, [512*512, 1]);
+    [idx, c, sumcent] = kmeans(tt_flat,3, 'emptyaction', 'drop');
+    if max(isnan(c))
+        [idx, ~, sumcent] = kmeans(tt_flat,3, 'emptyaction', 'drop');
+        z=1;
+        msgbox(['Please check the following image and re-run it if segmentation looks poor: ' dir_lst(ctr2).name(1:end-4) '  The segmentation sometimes fails because of the inherent nature of the algorithm (k-means)'],  'Laurianne"s Program' )
+    end
+    reshape_im = reshape(idx, [512 512]);
+    
+    %4. Filter out the background (Lowest Modal Value):
+    filt(1) = mode(tt_flat(idx==1));
+    filt(2) = mode(tt_flat(idx==2));
+    filt(3) = mode(tt_flat(idx==3));
+    bckg = min(filt);
+    throw = find(filt==bckg);
+    bb=chan1r;
+    bb(reshape_im==throw)=0;                                               %set background as zero in mask image
+    
+    %5. Conversion to mask image, clearing border and small objects:
+    bb = im2bw(bb, 0.0001);                                                %Convert to mask
+    qq = bb.*chan1r;
+    qq_bw = im2bw(qq, 1.4*graythresh(qq));
+    qq_clear = bwareaopen(qq_bw,2);
+    qq_clear = imfill(qq_clear, 'holes');
+    qq_clear = imclearborder(qq_clear);
+    imop = imerode(qq_clear, strel('disk', 2));
+    
+    %6. Labelling nuclei
+    [lbl num] = bwlabel(imop);
+    lbl = imdilate(lbl, strel('disk', 3));
+    
+    %7. Final Mask Image:
+    bwfinal = zeros(512,512);
+    bwfinal(lbl>0)=1;
+    chan1im = chan1r.*bwfinal;
+    chan2im = chan2r.*bwfinal;
+    chan3im = chan3r.*bwfinal;
+    
+    %8. Capturing properties of each nucleus:
+    rp_ch1 = regionprops(lbl, chan1r,  'Area', 'MeanIntensity' );
+    rp_ch2 = regionprops(lbl, chan2r, 'MeanIntensity' );
+    rp_ch3 = regionprops(lbl, chan3r, 'MeanIntensity' );
+    
+    for ctr1 = 1:length(rp_ch1)
+        resultmat(ctr1,1) = rp_ch1(ctr1).Area;
+        resultmat(ctr1,2) = rp_ch1(ctr1).MeanIntensity*255;                %Converting it back to 8-bit
+        resultmat(ctr1,3) = rp_ch2(ctr1).MeanIntensity*255;
+        resultmat(ctr1,4) = rp_ch3(ctr1).MeanIntensity*255;
+    end
+    
+   %% 9.  Last bit: Saving Images, Writing to Excel, clearing vars
+
+   %9.1: Saving Images:
+    
+    %Channel1
+    figure, imagesc(chan1im)
+    set(gcf, 'visible', 'off');
+    hgexport(gcf, [OutputDirectory dir_lst(ctr2).name(1:end-4) '_Channel1' '.jpg'], hgexport('factorystyle'), 'Format', 'jpeg');
+    close gcf;
+    
+    %Channel2
+    figure, imagesc(chan2im)
+    set(gcf, 'visible', 'off');
+    hgexport(gcf, [OutputDirectory dir_lst(ctr2).name(1:end-4) '_Channel2' '.jpg'], hgexport('factorystyle'), 'Format', 'jpeg');
+    close gcf;
+    
+    if NumberOfChannels==3 %Save Channel3 if it exists
+    figure, imagesc(chan3im)
+    set(gcf, 'visible', 'off');
+    hgexport(gcf, [OutputDirectory dir_lst(ctr2).name(1:end-4) '_Channel3' '.jpg'], hgexport('factorystyle'), 'Format', 'jpeg');
+    close gcf;
+    end
+    
+    %Channel1 Original Image
+    figure, imagesc(chan1r)
+    set(gcf, 'visible', 'off');
+    hgexport(gcf, [OutputDirectory dir_lst(ctr2).name(1:end-4) '_Channel1_OriginalImage' '.jpg'], hgexport('factorystyle'), 'Format', 'jpeg');
+    close gcf;
+    
+    %9.2: Saving to Excel
+    outvec = {'Relative Cell Area' 'Channel1 Mean Intensity' 'Channel2 Mean Intensity' 'Channel3 Mean Intensity' };
+    for ctr3 = 1:length(resultmat)
+        mm = ctr3+1;%offset header
+        outvec{mm,1} = resultmat(ctr3,1);
+        outvec{mm,2} = resultmat(ctr3,2);
+        outvec{mm,3} = resultmat(ctr3,3);
+        outvec{mm,4} = resultmat(ctr3,4);
+    end
+    try
+        xlswrite([OutputDirectory dir_lst(ctr2).name(1:end-4) '.xlsx'], outvec);
+    catch
+        errordlg('The output excel file may be in use or the disk may be write protected. Please close all MS Excel windows or select an alternate output folder and try again.')
+    end
+    
+    %10: Clear old variables to prevent information carryover
+    clearvars -except MainDirectory OutputDirectory dir_lst ctr2 NumberOfChannels
+end
+ff = toc;
+%MessageBox
+if ishandle(handle_msgbox)
+    delete(handle_msgbox);
+    clear('handle_msgbox');
+end
+handle_msgbox = msgbox(['  ..and its done!    Elapsed time is just: ' num2str(ff) ' seconds!'], 'Laurianne"s Program');
+
